@@ -53,7 +53,8 @@
 -module(rebar_eunit).
 
 -export([eunit/2,
-         clean/2]).
+         clean/2,
+         'eunit-compile'/2]).
 
 -include("rebar.hrl").
 
@@ -97,34 +98,12 @@ eunit(Config, AppFile) ->
             end
     end,
 
-    %% Make sure ?EUNIT_DIR/ and ebin/ directory exists (tack on dummy module)
-    ok = filelib:ensure_dir(eunit_dir() ++ "/foo"),
-    ok = filelib:ensure_dir(ebin_dir() ++ "/foo"),
+    ok = ensure_dirs(),
+    %% Save code path
+    CodePath = setup_code_path(),
 
-    %% Setup code path prior to compilation so that parse_transforms
-    %% and the like work properly. Also, be sure to add ebin_dir()
-    %% to the END of the code path so that we don't have to jump
-    %% through hoops to access the .app file
-    CodePath = code:get_path(),
-    true = code:add_patha(eunit_dir()),
-    true = code:add_pathz(ebin_dir()),
-
-    %% Obtain all the test modules for inclusion in the compile stage.
-    %% Notice: this could also be achieved with the following
-    %% rebar.config option: {eunit_compile_opts, [{src_dirs, ["test"]}]}
-    TestErls = rebar_utils:find_files("test", ".*\\.erl\$"),
-
-    %% Copy source files to eunit dir for cover in case they are not directly
-    %% in src but in a subdirectory of src. Cover only looks in cwd and ../src
-    %% for source files.
-    SrcErls = rebar_utils:find_files("src", ".*\\.erl\$"),
-    ok = rebar_file_utils:cp_r(SrcErls ++ TestErls, ?EUNIT_DIR),
-
-    %% Compile erlang code to ?EUNIT_DIR, using a tweaked config
-    %% with appropriate defines for eunit, and include all the test modules
-    %% as well.
-    rebar_erlc_compiler:doterl_compile(eunit_config(Config),
-                                       ?EUNIT_DIR, TestErls),
+    SrcErls = src_erls(),
+    ok = eunit_compile(Config, SrcErls),
 
     %% Build a list of all the .beams in ?EUNIT_DIR -- use this for
     %% cover and eunit testing. Normally you can just tell cover
@@ -174,15 +153,60 @@ eunit(Config, AppFile) ->
 clean(_Config, _File) ->
     rebar_file_utils:rm_rf(?EUNIT_DIR).
 
+'eunit-compile'(Config, _File) ->
+    ok = ensure_dirs(),
+    %% Save code path
+    CodePath = setup_code_path(),
+    ok = eunit_compile(Config, src_erls()),
+    %% Restore code path
+    true = code:set_path(CodePath),
+    ok.
+
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
+
+%% FIXME: find a cleaner approach than passing only SrcErls to allow caching
+eunit_compile(Config, SrcErls) ->
+    %% Obtain all the test modules for inclusion in the compile stage.
+    %% Notice: this could also be achieved with the following
+    %% rebar.config option: {eunit_compile_opts, [{src_dirs, ["test"]}]}
+    TestErls = rebar_utils:find_files("test", ".*\\.erl\$"),
+
+    %% Copy source files to eunit dir for cover in case they are not directly
+    %% in src but in a subdirectory of src. Cover only looks in cwd and ../src
+    %% for source files.
+    ok = rebar_file_utils:cp_r(SrcErls ++ TestErls, ?EUNIT_DIR),
+
+    %% Compile erlang code to ?EUNIT_DIR, using a tweaked config
+    %% with appropriate defines for eunit, and include all the test modules
+    %% as well.
+    ok = rebar_erlc_compiler:doterl_compile(eunit_config(Config),
+                                            ?EUNIT_DIR, TestErls).
+
+ensure_dirs() ->
+    %% Make sure ?EUNIT_DIR/ and ebin/ directory exist (tack on dummy module)
+    ok = filelib:ensure_dir(eunit_dir() ++ "/foo"),
+    ok = filelib:ensure_dir(ebin_dir() ++ "/foo").
+
+setup_code_path() ->
+    %% Setup code path prior to compilation so that parse_transforms
+    %% and the like work properly. Also, be sure to add ebin_dir()
+    %% to the END of the code path so that we don't have to jump
+    %% through hoops to access the .app file
+    CodePath = code:get_path(),
+    true = code:add_patha(eunit_dir()),
+    true = code:add_pathz(ebin_dir()),
+    CodePath.
 
 eunit_dir() ->
     filename:join(rebar_utils:get_cwd(), ?EUNIT_DIR).
 
 ebin_dir() ->
     filename:join(rebar_utils:get_cwd(), "ebin").
+
+src_erls() ->
+    rebar_utils:find_files("src", ".*\\.erl\$").
 
 perform_eunit(Config, Modules) ->
     %% suite defined, so only specify the module that relates to the
