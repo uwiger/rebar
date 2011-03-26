@@ -43,7 +43,8 @@
          prop_check/3,
          expand_code_path/0,
          deprecated/5,
-         expand_env_variable/3]).
+         expand_env_variable/3,
+         test_dir/0, ebin_dir/0]).
 
 -include("rebar.hrl").
 
@@ -192,6 +193,12 @@ expand_env_variable(InStr, VarName, RawVarValue) ->
                     [global]),
     R2 = re:replace(R1, "\\\$" ++ VarName ++ "\$", VarValue),
     re:replace(R2, "\\\${" ++ VarName ++ "}", VarValue, ReOpts).
+
+test_dir() ->
+    filename:join(rebar_utils:get_cwd(), ?TEST_DIR).
+
+ebin_dir() ->
+    filename:join(rebar_utils:get_cwd(), "ebin").
 
 
 %% ====================================================================
