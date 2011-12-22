@@ -303,6 +303,11 @@ deprecated(Key, Old, New, When) ->
 
 -spec delayed_halt(integer()) -> no_return().
 delayed_halt(Code) ->
-    halt(Code),
-    %% workaround to delay exit until all output is written
-    receive after infinity -> ok end.
+    case os:type() of
+        {win32, _} ->
+            init:stop(Code);
+        _ ->
+            halt(Code),
+            %% workaround to delay exit until all output is written
+            receive after infinity -> ok end
+    end.
