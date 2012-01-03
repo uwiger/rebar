@@ -221,6 +221,29 @@ vcs_vsn(Vcs, Dir) ->
             end
     end.
 
+deprecated(Old, New, Opts, When) when is_list(Opts) ->
+    case lists:member(Old, Opts) of
+        true ->
+            deprecated(Old, New, When);
+        false ->
+            ok
+    end;
+deprecated(Old, New, Config, When) ->
+    case rebar_config:get(Config, Old, undefined) of
+        undefined ->
+            ok;
+        _ ->
+            deprecated(Old, New, When)
+    end.
+
+deprecated(Old, New, When) ->
+    io:format(
+      <<"WARNING: deprecated ~p option used~n"
+        "Option '~p' has been deprecated~n"
+        "in favor of '~p'.~n"
+        "'~p' will be removed ~s.~n~n">>,
+      [Old, Old, New, Old, When]).
+
 get_deprecated_global(OldOpt, NewOpt, When) ->
     case rebar_config:get_global(NewOpt, undefined) of
         undefined ->
@@ -234,22 +257,6 @@ get_deprecated_global(OldOpt, NewOpt, When) ->
         New ->
             New
     end.
-
-deprecated(Old, New, Opts, When) ->
-    case lists:member(Old, Opts) of
-        true ->
-            deprecated(Old, New, When);
-        false ->
-            ok
-    end.
-
-deprecated(Old, New, When) ->
-    io:format(
-      <<"WARNING: deprecated ~p option used~n"
-        "Option '~p' has been deprecated~n"
-        "in favor of '~p'.~n"
-        "'~p' will be removed ~s.~n~n">>,
-      [Old, Old, New, Old, When]).
 
 %% ====================================================================
 %% Internal functions
