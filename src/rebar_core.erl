@@ -342,13 +342,24 @@ increment_operations() ->
 
 
 update_code_path(Config) ->
+    OldPath = code:get_path(),
+    [PathsA, PathsZ] =
+        [rebar_config:get_all(Config, P) || P <- [pa, pz]],
     case rebar_config:get_local(Config, lib_dirs, []) of
         [] ->
-            no_change;
+            case {PathsZ, PathsA} of
+                {[], []} ->
+                    no_change;
+                _ ->
+                    ok = code:add_pathsz(PathsZ),
+                    ok = code:add_pathsa(PathsA),
+                    {old, OldPath}
+            end;
         Paths ->
-            OldPath = code:get_path(),
             LibPaths = expand_lib_dirs(Paths, rebar_utils:get_cwd(), []),
             ok = code:add_pathsa(LibPaths),
+            ok = code:add_pathsa(PathsA),
+            ok = code:add_pathsz(PathsZ),
             {old, OldPath}
     end.
 
