@@ -88,8 +88,8 @@ wordsize() ->
 %% Val = string() | false
 %%
 sh(Command0, Options0) ->
-    ?INFO("sh info:\n\tcwd: ~p\n\tcmd: ~s\n\topts: ~p\n",
-          [get_cwd(), Command0, Options0]),
+    ?INFO("sh info:\n\tcwd: ~p\n\tcmd: ~s\n", [get_cwd(), Command0]),
+    ?DEBUG("\topts: ~p\n", [Options0]),
 
     DefaultOptions = [use_stdout, abort_on_error],
     Options = [expand_sh_flag(V)
@@ -260,9 +260,10 @@ deprecated(Old, New, When) ->
 patch_on_windows(Cmd, Env) ->
     case os:type() of
         {win32,nt} ->
-            "cmd /q /c " ++ lists:foldl(fun({Key, Value}, Acc) ->
-                                            expand_env_variable(Acc, Key, Value)
-                                        end, Cmd, Env);
+            "cmd /q /c "
+                ++ lists:foldl(fun({Key, Value}, Acc) ->
+                                       expand_env_variable(Acc, Key, Value)
+                               end, Cmd, Env);
         _ ->
             Cmd
     end.
@@ -355,8 +356,8 @@ vcs_vsn_cmd(git) ->
     case os:type() of
         {win32,nt} ->
             "FOR /F \"usebackq tokens=* delims=\" %i in "
-            "(`git log -n 1 \"--pretty=format:%h\" .`) do "
-            "@git describe --always --tags %i";
+                "(`git log -n 1 \"--pretty=format:%h\" .`) do "
+                "@git describe --always --tags %i";
         _ ->
             "git describe --always --tags `git log -n 1 --pretty=format:%h .`"
     end;
