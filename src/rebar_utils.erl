@@ -189,6 +189,18 @@ expand_env_variable(InStr, VarName, RawVarValue) ->
     end.
 
 vcs_vsn(Vcs, Dir) ->
+    Key = {Vcs, Dir},
+    try ets:lookup_element(rebar_vsn_cache, Key, 2) of
+        VsnString ->
+            VsnString
+    catch
+        error:badarg ->
+            VsnString = vcs_vsn_1(Vcs, Dir),
+            ets:insert(rebar_vsn_cache, {Key, VsnString}),
+            VsnString
+    end.
+
+vcs_vsn_1(Vcs, Dir) ->
     case vcs_vsn_cmd(Vcs) of
         {unknown, VsnString} ->
             ?DEBUG("vcs_vsn: Unknown VCS atom in vsn field: ~p\n", [Vcs]),
@@ -235,12 +247,19 @@ get_deprecated_global(OldOpt, NewOpt, When) ->
             New
     end.
 
-deprecated(Old, New, Opts, When) ->
+deprecated(Old, New, Opts, When) when is_list(Opts) ->
     case lists:member(Old, Opts) of
         true ->
             deprecated(Old, New, When);
         false ->
             ok
+    end;
+deprecated(Old, New, Config, When) ->
+    case rebar_config:get(Config, Old, undefined) of
+        undefined ->
+            ok;
+        _ ->
+            deprecated(Old, New, When)
     end.
 
 deprecated(Old, New, When) ->
