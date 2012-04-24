@@ -26,17 +26,22 @@
 %% -------------------------------------------------------------------
 -module(rebar_config).
 
--export([new/0, new/1, base_config/1,
+-export([new/0, new/1, base_config/1, consult_file/1,
          get/3, get_local/3, get_list/3,
          get_all/2,
          set/3,
          set_global/2, get_global/2,
-         is_verbose/0, get_jobs/0]).
+         is_verbose/0, get_jobs/0,
+         set_env/3, get_env/2]).
 
 -include("rebar.hrl").
 
 -record(config, { dir :: file:filename(),
-                  opts :: list() }).
+                  opts = [] :: list(),
+                  envs = [] :: list({module(), env()}) }).
+
+-type env()     :: [env_var()].
+-type env_var() :: {string(), string()}.
 
 %% Types that can be used from other modules -- alphabetically ordered.
 -export_type([config/0]).
@@ -53,8 +58,7 @@ base_config(#config{opts=Opts0}) ->
     new(Opts0, ConfName).
 
 new() ->
-    #config { dir = rebar_utils:get_cwd(),
-              opts = [] }.
+    #config{dir = rebar_utils:get_cwd()}.
 
 new(ConfigFile) when is_list(ConfigFile) ->
     case consult_file(ConfigFile) of
@@ -88,7 +92,7 @@ new(Opts0, ConfName) ->
                    ?ABORT("Failed to load ~s: ~p\n", [ConfigFile, Other])
            end,
 
-    #config { dir = Dir, opts = Opts }.
+    #config{dir = Dir, opts = Opts}.
 
 get(Config, Key, Default) ->
     proplists:get_value(Key, Config#config.opts, Default).
@@ -128,25 +132,60 @@ is_verbose() ->
 get_jobs() ->
     get_global(jobs, 3).
 
-%% ===================================================================
-%% Internal functions
-%% ===================================================================
-
 consult_file(File) ->
     case filename:extension(File) of
         ".script" ->
-            file:script(File, [{'SCRIPT', File}]);
+            consult_and_eval(remove_script_ext(File), File);
         _ ->
             Script = File ++ ".script",
-            case file:read_file_info(Script) of
-                {ok, _} ->
-                    ?DEBUG("Evaluating config script ~p~n", [Script]),
-                    file:script(Script, [{'SCRIPT', Script}]);
-                _ ->
+            case filelib:is_regular(Script) of
+                true ->
+                    consult_and_eval(File, Script);
+                false ->
                     ?DEBUG("Consult config file ~p~n", [File]),
                     file:consult(File)
             end
     end.
+
+set_env(Config, Mod, Env) ->
+    OldEnvs = Config#config.envs,
+    NewEnvs = case lists:keymember(Mod, 1, OldEnvs) of
+                  true  -> lists:keyreplace(Mod, 1, OldEnvs, {Mod, Env});
+                  false -> [{Mod,Env}|OldEnvs]
+              end,
+    Config#config{envs=NewEnvs}.
+
+get_env(Config, Mod) ->
+    proplists:get_value(Mod, Config#config.envs, []).
+
+%% ===================================================================
+%% Internal functions
+%% ===================================================================
+
+consult_and_eval(File, Script) ->
+    ?DEBUG("Evaluating config script ~p~n", [Script]),
+    ConfigData = try_consult(File),
+    file:script(Script, bs([{'CONFIG', ConfigData}, {'SCRIPT', Script}])).
+
+
+remove_script_ext(F) ->
+    "tpircs." ++ Rev = lists:reverse(F),
+    lists:reverse(Rev).
+
+try_consult(File) ->
+    case file:consult(File) of
+        {ok, Terms} ->
+            ?DEBUG("Consult config file ~p~n", [File]),
+            Terms;
+        {error, enoent}  -> [];
+        {error, Reason} ->
+            ?ABORT("Failed to read config file ~s: ~p~n", [File, Reason])
+    end.
+
+bs(Vars) ->
+    lists:foldl(fun({K,V}, Bs) ->
+                        erl_eval:add_binding(K, V, Bs)
+                end, erl_eval:new_bindings(), Vars).
 
 local_opts([], Acc) ->
     lists:reverse(Acc);

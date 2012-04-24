@@ -103,7 +103,14 @@ process_dir(Dir, ParentConfig, Command, DirSet) ->
             DirSet;
 
         true ->
-            ?DEBUG("Entering ~s\n", [Dir]),
+            AbsDir = filename:absname(Dir),
+            case processing_base_dir(Dir) of
+                false ->
+                    ?CONSOLE("==> Entering directory `~s'\n", [AbsDir]);
+                true ->
+                    ok
+            end,
+
             ok = file:set_cwd(Dir),
             Config = maybe_load_local_config(Dir, ParentConfig),
 
@@ -118,8 +125,17 @@ process_dir(Dir, ParentConfig, Command, DirSet) ->
             %% to process this dir.
             {ok, AvailModuleSets} = application:get_env(rebar, modules),
             ModuleSet = choose_module_set(AvailModuleSets, Dir),
-            maybe_process_dir(ModuleSet, Config, CurrentCodePath,
-                              Dir, Command, DirSet)
+            Res = maybe_process_dir(ModuleSet, Config, CurrentCodePath,
+                                    Dir, Command, DirSet),
+
+            case processing_base_dir(Dir) of
+                false ->
+                    ?CONSOLE("==> Leaving directory `~s'\n", [AbsDir]);
+                true ->
+                    ok
+            end,
+
+            Res
     end.
 
 maybe_process_dir({[], undefined}=ModuleSet, Config, CurrentCodePath,
@@ -152,7 +168,7 @@ maybe_process_dir0(AppFile, ModuleSet, Config, CurrentCodePath,
                          CurrentCodePath, ModuleSet)
     end.
 
-process_dir0(Dir, Command, DirSet, Config, CurrentCodePath,
+process_dir0(Dir, Command, DirSet, Config0, CurrentCodePath,
              {DirModules, ModuleSetFile}) ->
     %% Get the list of modules for "any dir". This is a catch-all list
     %% of modules that are processed in addition to modules associated
@@ -164,21 +180,21 @@ process_dir0(Dir, Command, DirSet, Config, CurrentCodePath,
 
     %% Invoke 'preprocess' on the modules -- this yields a list of other
     %% directories that should be processed _before_ the current one.
-    Predirs = acc_modules(Modules, preprocess, Config, ModuleSetFile),
+    Predirs = acc_modules(Modules, preprocess, Config0, ModuleSetFile),
 
     SubdirAssoc = remember_cwd_subdir(Dir, Predirs),
 
     %% Get the list of plug-in modules from rebar.config. These
     %% modules may participate in preprocess and postprocess.
-    {ok, PluginModules} = plugin_modules(Config, SubdirAssoc),
+    {ok, PluginModules} = plugin_modules(Config0, SubdirAssoc),
 
     PluginPredirs = acc_modules(PluginModules, preprocess,
-                                Config, ModuleSetFile),
+                                Config0, ModuleSetFile),
 
     AllPredirs = Predirs ++ PluginPredirs,
 
     ?DEBUG("Predirs: ~p\n", [AllPredirs]),
-    DirSet2 = process_each(AllPredirs, Command, Config,
+    DirSet2 = process_each(AllPredirs, Command, Config0,
                            ModuleSetFile, DirSet),
 
     %% Make sure the CWD is reset properly; processing the dirs may have
@@ -186,25 +202,31 @@ process_dir0(Dir, Command, DirSet, Config, CurrentCodePath,
     ok = file:set_cwd(Dir),
 
     %% Check that this directory is not on the skip list
-    case is_skip_dir(Dir) of
-        true ->
-            %% Do not execute the command on the directory, as some
-            %% module as requested a skip on it.
-            ?INFO("Skipping ~s in ~s\n", [Command, Dir]);
+    Config = case is_skip_dir(Dir) of
+                 true ->
+                     %% Do not execute the command on the directory, as some
+                     %% module has requested a skip on it.
+                     ?INFO("Skipping ~s in ~s\n", [Command, Dir]),
+                     Config0;
 
-        false ->
-            %% Execute any before_command plugins on this directory
-            execute_pre(Command, PluginModules,
-                        Config, ModuleSetFile),
+                 false ->
+                     %% Check for and get command specific environments
+                     {Config1, Env} = setup_envs(Config0, Modules),
 
-            %% Execute the current command on this directory
-            execute(Command, Modules ++ PluginModules,
-                    Config, ModuleSetFile),
+                     %% Execute any before_command plugins on this directory
+                     execute_pre(Command, PluginModules,
+                                 Config1, ModuleSetFile, Env),
 
-            %% Execute any after_command plugins on this directory
-            execute_post(Command, PluginModules,
-                         Config, ModuleSetFile)
-    end,
+                     %% Execute the current command on this directory
+                     execute(Command, Modules ++ PluginModules,
+                             Config1, ModuleSetFile, Env),
+
+                     %% Execute any after_command plugins on this directory
+                     execute_post(Command, PluginModules,
+                                  Config1, ModuleSetFile, Env),
+
+                     Config1
+             end,
 
     %% Mark the current directory as processed
     DirSet3 = sets:add_element(Dir, DirSet2),
@@ -235,7 +257,9 @@ remember_cwd_subdir(Cwd, Subdirs) ->
                             ?DEBUG("Associate sub_dir ~s with ~s~n", [Dir, Cwd]),
                             dict:store(Dir, Cwd, Dict);
                         {ok, Existing} ->
-                            ?ABORT("sub_dir ~s already associated with ~s~n",
+                            ?ABORT("Internal consistency assertion failed.~n"
+                                   "sub_dir ~s already associated with ~s.~n"
+                                   "Duplicate sub_dirs or deps entries?",
                                    [Dir, Existing]),
                             Dict
                     end
@@ -293,22 +317,22 @@ is_dir_type(rel_dir, Dir) ->
 is_dir_type(_, _) ->
     false.
 
-execute_pre(Command, Modules, Config, ModuleFile) ->
+execute_pre(Command, Modules, Config, ModuleFile, Env) ->
     execute_plugin_hook("pre_", Command, Modules,
-                        Config, ModuleFile).
+                        Config, ModuleFile, Env).
 
-execute_post(Command, Modules, Config, ModuleFile) ->
+execute_post(Command, Modules, Config, ModuleFile, Env) ->
     execute_plugin_hook("post_", Command, Modules,
-                        Config, ModuleFile).
+                        Config, ModuleFile, Env).
 
-execute_plugin_hook(Hook, Command, Modules, Config, ModuleFile) ->
+execute_plugin_hook(Hook, Command, Modules, Config, ModuleFile, Env) ->
     HookFunction = list_to_atom(Hook ++ atom_to_list(Command)),
-    execute(HookFunction, Modules, Config, ModuleFile).
+    execute(HookFunction, Modules, Config, ModuleFile, Env).
 
 %%
 %% Execute a command across all applicable modules
 %%
-execute(Command, Modules, Config, ModuleFile) ->
+execute(Command, Modules, Config, ModuleFile, Env) ->
     case select_modules(Modules, Command, []) of
         [] ->
             Cmd = atom_to_list(Command),
@@ -327,9 +351,6 @@ execute(Command, Modules, Config, ModuleFile) ->
             ?CONSOLE("==> ~s (~s)\n", [filename:basename(Dir), Command]),
 
             increment_operations(),
-
-            %% Check for and get command specific environments
-            Env = setup_envs(Config, Modules),
 
             %% Run the available modules
             apply_hooks(pre_hooks, Config, Command, Env),
@@ -436,9 +457,16 @@ apply_hook({Env, {Command, Hook}}) ->
     rebar_utils:sh(Hook, [{env, Env}, {abort_on_error, Msg}]).
 
 setup_envs(Config, Modules) ->
-    lists:flatten([M:setup_env(Config) ||
-                      M <- Modules,
-                      erlang:function_exported(M, setup_env, 1)]).
+    lists:foldl(fun(M, {C,E}=T) ->
+                        case erlang:function_exported(M, setup_env, 1) of
+                            true ->
+                                Env = M:setup_env(C),
+                                C1 = rebar_config:set_env(C, M, Env),
+                                {C1, E++Env};
+                            false ->
+                                T
+                        end
+                end, {Config, []}, Modules).
 
 acc_modules(Modules, Command, Config, File) ->
     acc_modules(select_modules(Modules, Command, []),

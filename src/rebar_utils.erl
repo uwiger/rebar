@@ -45,7 +45,10 @@
          deprecated/3, deprecated/4,
          expand_env_variable/3,
          vcs_vsn/2,
-         get_deprecated_global/3]).
+         get_deprecated_global/3,
+         get_deprecated_list/4, get_deprecated_list/5,
+         get_deprecated_local/4, get_deprecated_local/5,
+         delayed_halt/1]).
 
 -include("rebar.hrl").
 
@@ -137,7 +140,7 @@ ensure_dir(Path) ->
 -spec abort(string(), [term()]) -> no_return().
 abort(String, Args) ->
     ?ERROR(String, Args),
-    halt(1).
+    delayed_halt(1).
 
 %% TODO: Rename emulate_escript_foldl to escript_foldl and remove
 %% this function when the time is right. escript:foldl/3 was an
@@ -190,9 +193,7 @@ expand_env_variable(InStr, VarName, RawVarValue) ->
 
 vcs_vsn(Vcs, Dir) ->
     Key = {Vcs, Dir},
-    try ets:lookup_element(rebar_vsn_cache, Key, 2) of
-        VsnString ->
-            VsnString
+    try ets:lookup_element(rebar_vsn_cache, Key, 2)
     catch
         error:badarg ->
             VsnString = vcs_vsn_1(Vcs, Dir),
@@ -234,9 +235,12 @@ vcs_vsn_1(Vcs, Dir) ->
     end.
 
 get_deprecated_global(OldOpt, NewOpt, When) ->
-    case rebar_config:get_global(NewOpt, undefined) of
+    get_deprecated_global(OldOpt, NewOpt, undefined, When).
+
+get_deprecated_global(OldOpt, NewOpt, Default, When) ->
+    case rebar_config:get_global(NewOpt, Default) of
         undefined ->
-            case rebar_config:get_global(OldOpt, undefined) of
+            case rebar_config:get_global(OldOpt, Default) of
                 undefined ->
                     undefined;
                 Old ->
@@ -246,6 +250,21 @@ get_deprecated_global(OldOpt, NewOpt, When) ->
         New ->
             New
     end.
+
+
+get_deprecated_list(Config, OldOpt, NewOpt, When) ->
+    get_deprecated_list(Config, OldOpt, NewOpt, undefined, When).
+
+get_deprecated_list(Config, OldOpt, NewOpt, Default, When) ->
+    get_deprecated_3(fun rebar_config:get_list/3,
+                     Config, OldOpt, NewOpt, Default, When).
+
+get_deprecated_local(Config, OldOpt, NewOpt, When) ->
+    get_deprecated_local(Config, OldOpt, NewOpt, undefined, When).
+
+get_deprecated_local(Config, OldOpt, NewOpt, Default, When) ->
+    get_deprecated_3(fun rebar_config:get_local/3,
+                     Config, OldOpt, NewOpt, Default, When).
 
 deprecated(Old, New, Opts, When) when is_list(Opts) ->
     case lists:member(Old, Opts) of
@@ -270,9 +289,44 @@ deprecated(Old, New, When) ->
         "'~p' will be removed ~s.~n~n">>,
       [Old, Old, New, Old, When]).
 
+-spec delayed_halt(integer()) -> no_return().
+delayed_halt(Code) ->
+    %% Work around buffer flushing issue in erlang:halt if OTP older
+    %% than R15B01.
+    %% TODO: remove workaround once we require R15B01 or newer
+    %% R15B01 introduced erlang:halt/2
+    case erlang:is_builtin(erlang, halt, 2) of
+        true ->
+            halt(Code);
+        false ->
+            case os:type() of
+                {win32, nt} ->
+                    timer:sleep(100),
+                    halt(Code);
+                _ ->
+                    halt(Code),
+                    %% workaround to delay exit until all output is written
+                    receive after infinity -> ok end
+            end
+    end.
+
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
+
+get_deprecated_3(Get, Config, OldOpt, NewOpt, Default, When) ->
+    case Get(Config, NewOpt, Default) of
+        Default ->
+            case Get(Config, OldOpt, Default) of
+                Default ->
+                    Default;
+                Old ->
+                    deprecated(OldOpt, NewOpt, When),
+                    Old
+            end;
+        New ->
+            New
+    end.
 
 %% We do the shell variable substitution ourselves on Windows and hope that the
 %% command doesn't use any other shell magic.
