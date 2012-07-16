@@ -96,14 +96,14 @@
                objects = [] :: [file:filename(), ...] | [],
                opts = [] ::list() | []}).
 
-compile(Config, AppFile) ->
-    rebar_utils:deprecated(port_sources, port_specs, Config, "soon"),
-    rebar_utils:deprecated(so_name, port_specs, Config, "soon"),
-    rebar_utils:deprecated(so_specs, port_specs, Config, "soon"),
+compile(Config0, AppFile) ->
+    rebar_utils:deprecated(port_sources, port_specs, Config0, "soon"),
+    rebar_utils:deprecated(so_name, port_specs, Config0, "soon"),
+    rebar_utils:deprecated(so_specs, port_specs, Config0, "soon"),
 
     %% TODO: remove SpecType and OldSources make get_specs/2
     %%       return list(#spec{}) when removing deprecated options
-    {SpecType, {OldSources, Specs}} = get_specs(Config, AppFile),
+    {Config, {SpecType, {OldSources, Specs}}} = get_specs(Config0, AppFile),
 
     case {SpecType, OldSources, Specs} of
         {old, [], _} ->
@@ -149,7 +149,7 @@ compile(Config, AppFile) ->
 clean(Config, AppFile) ->
     %% TODO: remove SpecType and OldSources make get_specs/2
     %%       return list(#spec{}) when removing deprecated options
-    {SpecType, {OldSources, Specs}} = get_specs(Config, AppFile),
+    {Config1, {SpecType, {OldSources, Specs}}} = get_specs(Config, AppFile),
 
     case {SpecType, OldSources, Specs} of
         {old, [], _} ->
@@ -163,7 +163,8 @@ clean(Config, AppFile) ->
                                   rebar_file_utils:delete_each([Target]),
                                   rebar_file_utils:delete_each(Objects)
                           end, Specs)
-    end.
+    end,
+    {ok, Config1}.
 
 setup_env(Config) ->
     setup_env(Config, []).
@@ -214,14 +215,28 @@ compile_each([Source | Rest], Type, Env, NewBins) ->
     Bin = replace_extension(Source, Ext, ".o"),
     case needs_compile(Source, Bin) of
         true ->
-            ?CONSOLE("Compiling ~s\n", [Source]),
             Template = select_compile_template(Type, compiler(Ext)),
-            rebar_utils:sh(expand_command(Template, Env, Source, Bin),
-                           [{env, Env}]),
+            Cmd = expand_command(Template, Env, Source, Bin),
+            ShOpts = [{env, Env}, return_on_error, {use_stdout, false}],
+            exec_compiler(Source, Cmd, ShOpts),
             compile_each(Rest, Type, Env, [Bin | NewBins]);
         false ->
             ?INFO("Skipping ~s\n", [Source]),
             compile_each(Rest, Type, Env, NewBins)
+    end.
+
+exec_compiler(Source, Cmd, ShOpts) ->
+    case rebar_utils:sh(Cmd, ShOpts) of
+        {error, {_RC, RawError}} ->
+            AbsSource = filename:absname(Source),
+            ?CONSOLE("Compiling ~s\n", [AbsSource]),
+            Error = re:replace(RawError, Source, AbsSource,
+                               [{return, list}, global]),
+            ?CONSOLE("~s", [Error]),
+            ?ABORT;
+        {ok, Output} ->
+            ?CONSOLE("Compiling ~s\n", [Source]),
+            ?CONSOLE("~s", [Output])
     end.
 
 needs_compile(Source, Bin) ->
@@ -247,12 +262,13 @@ needs_link(SoName, NewBins) ->
 %%
 
 get_specs(Config, AppFile) ->
-    case rebar_config:get(Config, port_specs, undefined) of
+    case rebar_config:get_local(Config, port_specs, undefined) of
         undefined ->
             %% TODO: DEPRECATED: remove support for non-port_specs syntax
-            {old, old_get_specs(Config, AppFile)};
+            {Config1, Specs} = old_get_specs(Config, AppFile),
+            {Config1, {old, Specs}};
         PortSpecs ->
-            {new, get_port_specs(Config, PortSpecs)}
+            {Config, {new, get_port_specs(Config, PortSpecs)}}
     end.
 
 get_port_specs(Config, PortSpecs) ->
@@ -304,43 +320,45 @@ maybe_switch_extension(_OsType, Target) ->
 
 switch_to_dll_or_exe(Target) ->
     case filename:extension(Target) of
-        ".so" -> filename:rootname(Target, ".so") ++ ".dll";
-        []    -> Target ++ ".exe";
-        Other -> Other
+        ".so"  -> filename:rootname(Target, ".so") ++ ".dll";
+        []     -> Target ++ ".exe";
+        _Other -> Target
     end.
 
 %% TODO: DEPRECATED: remove support for non-port_specs syntax [old_*()]
 old_get_specs(Config, AppFile) ->
     OsType = os:type(),
     SourceFiles = old_get_sources(Config),
-    Specs =
-        case rebar_config:get(Config, so_specs, undefined) of
+    {NewConfig, Specs} =
+        case rebar_config:get_local(Config, so_specs, undefined) of
             undefined ->
                 Objects = port_objects(SourceFiles),
                 %% New form of so_specs is not provided. See if the old form
                 %% of {so_name} is available instead
                 Dir = "priv",
-                SoName = case rebar_config:get(Config, so_name, undefined) of
-                             undefined ->
-                                 %% Ok, neither old nor new form is
-                                 %% available. Use the app name and
-                                 %% generate a sensible default.
-                                 AppName = rebar_app_utils:app_name(AppFile),
-                                 DrvName = ?FMT("~s_drv.so", [AppName]),
-                                 filename:join([Dir, DrvName]);
-                             AName ->
-                                 %% Old form is available -- use it
-                                 filename:join(Dir, AName)
-                         end,
-                [old_get_so_spec({SoName, Objects}, OsType)];
+                {Config2, SoName} =
+                    case rebar_config:get_local(Config, so_name, undefined) of
+                        undefined ->
+                            %% Ok, neither old nor new form is
+                            %% available. Use the app name and
+                            %% generate a sensible default.
+                            {Config1, AppName} =
+                                rebar_app_utils:app_name(Config, AppFile),
+                            DrvName = ?FMT("~s_drv.so", [AppName]),
+                            {Config1, filename:join([Dir, DrvName])};
+                        AName ->
+                            %% Old form is available -- use it
+                            {Config, filename:join(Dir, AName)}
+                    end,
+                {Config2, [old_get_so_spec({SoName, Objects}, OsType)]};
             SoSpecs ->
-                [old_get_so_spec(S, OsType) || S <- SoSpecs]
+                {Config, [old_get_so_spec(S, OsType) || S <- SoSpecs]}
         end,
-    {SourceFiles, Specs}.
+    {NewConfig, {SourceFiles, Specs}}.
 
 old_get_sources(Config) ->
-    RawSources = rebar_config:get_list(Config, port_sources,
-                                       ["c_src/*.c"]),
+    RawSources = rebar_config:get_local(Config, port_sources,
+                                        ["c_src/*.c"]),
     FilteredSources = old_filter_port_sources(RawSources),
     old_expand_sources(FilteredSources).
 
@@ -472,8 +490,7 @@ expand_keys_in_value([Key | Rest], Value, Vars) ->
 expand_command(TmplName, Env, InFiles, OutFile) ->
     Cmd0 = proplists:get_value(TmplName, Env),
     Cmd1 = rebar_utils:expand_env_variable(Cmd0, "PORT_IN_FILES", InFiles),
-    Cmd2 = rebar_utils:expand_env_variable(Cmd1, "PORT_OUT_FILE", OutFile),
-    re:replace(Cmd2, "\\\$\\w+|\\\${\\w+}", "", [global, {return, list}]).
+    rebar_utils:expand_env_variable(Cmd1, "PORT_OUT_FILE", OutFile).
 
 %%
 %% Given a string, determine if it is expandable
@@ -620,5 +637,29 @@ default_env() ->
      %% OS X Lion flags for 32-bit
      {"darwin11.*-32", "CFLAGS", "-m32 $CFLAGS"},
      {"darwin11.*-32", "CXXFLAGS", "-m32 $CXXFLAGS"},
-     {"darwin11.*-32", "LDFLAGS", "-arch i386 $LDFLAGS"}
+     {"darwin11.*-32", "LDFLAGS", "-arch i386 $LDFLAGS"},
+
+     %% Windows specific flags
+     %% add MS Visual C++ support to rebar on Windows
+     {"win32", "CC", "cl.exe"},
+     {"win32", "CXX", "cl.exe"},
+     {"win32", "LINKER", "link.exe"},
+     {"win32", "DRV_CXX_TEMPLATE",
+     %% DRV_* and EXE_* Templates are identical
+      "$CXX /c $CXXFLAGS $DRV_CFLAGS $PORT_IN_FILES /Fo$PORT_OUT_FILE"},
+     {"win32", "DRV_CC_TEMPLATE",
+      "$CC /c $CFLAGS $DRV_CFLAGS $PORT_IN_FILES /Fo$PORT_OUT_FILE"},
+     {"win32", "DRV_LINK_TEMPLATE",
+      "$LINKER $PORT_IN_FILES $LDFLAGS $DRV_LDFLAGS /OUT:$PORT_OUT_FILE"},
+     %% DRV_* and EXE_* Templates are identical
+     {"win32", "EXE_CXX_TEMPLATE",
+      "$CXX /c $CXXFLAGS $EXE_CFLAGS $PORT_IN_FILES /Fo$PORT_OUT_FILE"},
+     {"win32", "EXE_CC_TEMPLATE",
+      "$CC /c $CFLAGS $EXE_CFLAGS $PORT_IN_FILES /Fo$PORT_OUT_FILE"},
+     {"win32", "EXE_LINK_TEMPLATE",
+      "$LINKER $PORT_IN_FILES $LDFLAGS $EXE_LDFLAGS /OUT:$PORT_OUT_FILE"},
+     %% ERL_CFLAGS are ok as -I even though strictly it should be /I
+     {"win32", "ERL_LDFLAGS", " /LIBPATH:$ERL_EI_LIBDIR erl_interface.lib ei.lib"},
+     {"win32", "DRV_CFLAGS", "/Zi /Wall $ERL_CFLAGS"},
+     {"win32", "DRV_LDFLAGS", "/DLL $ERL_LDFLAGS"}
     ].

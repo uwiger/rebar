@@ -25,13 +25,11 @@ START_ERL=`cat $RUNNER_BASE_DIR/releases/start_erl.data`
 ERTS_VSN=${START_ERL% *}
 APP_VSN=${START_ERL#* }
 
-# Use releases/VSN/vm.args if it exists otherwise use etc/vm.args
+# Use $CWD/vm.args if exists, otherwise releases/APP_VSN/vm.args, or else etc/vm.args
 if [ -e "$CALLER_DIR/vm.args" ]; then
     VMARGS_PATH=$CALLER_DIR/vm.args
     USE_DIR=$CALLER_DIR
-    echo "VMARGS_PATH = $VMARGS_PATH"
 else
-    echo "no local vm.args"
     USE_DIR=$RUNNER_BASE_DIR
     if [ -e "$RUNNER_BASE_DIR/releases/$APP_VSN/vm.args" ]; then
         VMARGS_PATH="$RUNNER_BASE_DIR/releases/$APP_VSN/vm.args"
@@ -105,20 +103,20 @@ case "$1" in
         case "$1" in
             start)
                 shift
-                START_OPTION="console $@"
+                START_OPTION="console"
                 HEART_OPTION="start"
                 ;;
             start_boot)
                 shift
-                START_OPTION="console_boot $@"
-                HEART_OPTION="start_boot $@"
+                START_OPTION="console_boot"
+                HEART_OPTION="start_boot"
                 ;;
-            esac
-        HEART_COMMAND="$RUNNER_BASE_DIR/bin/$SCRIPT $HEART_OPTION"
+        esac
+        RUN_PARAM=$(printf "\'%s\' " "$@")
+        HEART_COMMAND="$RUNNER_BASE_DIR/bin/$SCRIPT $HEART_OPTION $RUN_PARAM"
         export HEART_COMMAND
         mkdir -p $PIPE_DIR
-        shift # remove $1
-        $ERTS_PATH/run_erl -daemon $PIPE_DIR $RUNNER_LOG_DIR "exec $RUNNER_BASE_DIR/bin/$SCRIPT $START_OPTION" 2>&1
+        $ERTS_PATH/run_erl -daemon $PIPE_DIR $RUNNER_LOG_DIR "exec $RUNNER_BASE_DIR/bin/$SCRIPT $START_OPTION $RUN_PARAM" 2>&1
         ;;
 
     stop)
@@ -227,13 +225,15 @@ case "$1" in
 
     console|console_clean|console_boot)
         # .boot file typically just $SCRIPT (ie, the app name)
-        # however, for debugging, sometimes start_clean.boot is useful:
+        # however, for debugging, sometimes start_clean.boot is useful.
+        # For e.g. 'setup', one may even want to name another boot script.
         case "$1" in
             console)        BOOTFILE=$SCRIPT ;;
             console_clean)  BOOTFILE=start_clean ;;
             console_boot)
                 shift
                 BOOTFILE="$1"
+                shift
                 ;;
         esac
         # Setup beam-required vars
@@ -284,7 +284,7 @@ case "$1" in
         exec $CMD -- ${1+"$@"}
         ;;
     *)
-        echo "Usage: $SCRIPT {start|foreground|stop|restart|reboot|ping|console|console_clean|attach|remote_console|upgrade}"
+        echo "Usage: $SCRIPT {start|start_boot <file>|foreground|stop|restart|reboot|ping|console|console_clean|console_boot <file>|attach|remote_console|upgrade}"
         exit 1
         ;;
 esac
